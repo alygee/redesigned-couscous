@@ -15,5 +15,5 @@ module.exports = function(config) {
       bundleDelay: 2000 // Fixes "reload" error messages, YMMV!
     },
     reporters: ['mocha'],
-  })
-}
+  });
+};

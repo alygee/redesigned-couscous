@@ -2,3 +2,4 @@ node_modules/
 .DS_Store
 myangular.js
 myangular.min.js
+.idea/
