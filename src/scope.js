@@ -3,6 +3,17 @@
 
 const _ = require('lodash');
 
+_.mixin({
+  isArrayLike: function(obj) {
+    if (_.isNull(obj) || _.isUndefined(obj)) {
+      return false;
+    }
+    const length = obj.length;
+    return length === 0 ||
+      (_.isNumber(length) && length > 0 && (length - 1) in obj);
+  }
+});
+
 function Scope() {
   this.$$watchers = [];
   this.$$lastDirtyWatch = null;
@@ -20,12 +31,12 @@ function initWatchVal() {}
 Scope.prototype.$watch = function(watchFn, listenerFn, valueEq) {
   const watcher = {
     watchFn: watchFn,
-    listenerFn: listenerFn || function () {},
+    listenerFn: listenerFn || _.noop,
     valueEq: !!valueEq,
     last: initWatchVal
   };
   this.$$watchers.unshift(watcher);
-  this.$root.$$lastDirtyWatch = 'null';
+  this.$root.$$lastDirtyWatch = null;
   return () => {
     const index = this.$$watchers.indexOf(watcher);
     if (index >= 0) {
@@ -115,7 +126,6 @@ Scope.prototype.$$everyScope = function(fn) {
 Scope.prototype.$$digestOnce = function () {
   let dirty;
   let continueLoop = true;
-  const self = this;
 
   this.$$everyScope(function(scope) {
     let newValue, oldValue;
@@ -127,11 +137,11 @@ Scope.prototype.$$digestOnce = function () {
           oldValue = watcher.last;
 
           if (!scope.$$areEqual(newValue, oldValue, watcher.valueEq)) {
-            self.$root.$$lastDirtyWatch = watcher;
+            scope.$root.$$lastDirtyWatch = watcher;
             watcher.last = (watcher.valueEq ? _.cloneDeep(newValue) : newValue);
             watcher.listenerFn(newValue, (oldValue === initWatchVal ? newValue : oldValue), scope);
             dirty = true;
-          } else if (self.$root.$$lastDirtyWatch === watcher) {
+          } else if (scope.$root.$$lastDirtyWatch === watcher) {
             continueLoop = false;
             return false;
           }
@@ -153,7 +163,7 @@ Scope.prototype.$digest = function() {
   this.$root.$$lastDirtyWatch = null;
   this.$beginPhase('$digest');
 
-  if (this.$$applyAsyncId) {
+  if (this.$root.$$applyAsyncId) {
     clearTimeout(this.$root.$$applyAsyncId);
     this.$$flushApplyAsync();
   }
@@ -264,6 +274,94 @@ Scope.prototype.$destroy = function() {
     }
   }
   this.$$watchers = null;
+};
+
+Scope.prototype.$watchCollection = function(watchFn, listenerFn) {
+  let newValue,
+      oldValue,
+      oldLength,
+      verOldValue,
+      firstRun = true,
+      changeCount = 0;
+
+  const trackVeryOldValue = (listenerFn.length > 1);
+
+  const internalWatchFn = scope => {
+    let newLength;
+    newValue = watchFn(scope);
+
+    if (_.isObject(newValue)) {
+      if (_.isArrayLike(newValue)) {
+        if (!_.isArray(oldValue)) {
+          changeCount++;
+          oldValue = [];
+        }
+        if (newValue.length !== oldValue.length) {
+          changeCount++;
+          oldValue.length = newValue.length;
+        }
+        _.forEach(newValue, function(newItem, i) {
+          const bothNaN = _.isNaN(newItem) && _.isNaN(oldValue[i]);
+          if (!bothNaN && newItem !== oldValue[i]) {
+            changeCount++;
+            oldValue[i] = newItem;
+          }
+        });
+      } else {
+        if (!_.isObject(oldValue) || _.isArrayLike(oldValue)) {
+          changeCount++;
+          oldValue = {};
+          oldLength = 0;
+        }
+        newLength = 0;
+        _.forOwn(newValue, function(newVal, key) {
+          newLength++;
+          if (oldValue.hasOwnProperty(key)) {
+            const bothNaN = _.isNaN(newVal) && _.isNaN(oldValue[key]);
+            if (!bothNaN && oldValue[key] !== newVal) {
+              changeCount++;
+              oldValue[key] = newVal;
+            }
+          } else {
+            changeCount++;
+            oldLength++;
+            oldValue[key] = newVal;
+          }
+        });
+        if (oldLength > newLength) {
+          changeCount++;
+          _.forOwn(oldValue, function(oldVal, key) {
+            if (!newValue.hasOwnProperty(key)) {
+              oldLength--;
+              delete oldValue[key];
+            }
+          });
+        }
+      }
+    } else {
+      if (!this.$$areEqual(newValue, oldValue, false)) {
+        changeCount++;
+      }
+      oldValue = newValue;
+    }
+
+    return changeCount;
+  };
+
+  const internalListenerFn = () => {
+    if (firstRun) {
+      listenerFn(newValue, newValue, this);
+      firstRun = false;
+    } else {
+      listenerFn(newValue, verOldValue, this);
+    }
+
+    if (trackVeryOldValue) {
+      verOldValue = _.clone(newValue);
+    }
+  };
+
+  return this.$watch(internalWatchFn, internalListenerFn);
 };
 
 module.exports = Scope;
